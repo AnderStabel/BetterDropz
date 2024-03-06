@@ -1,10 +1,11 @@
-package net.anders.betteritemsdropped.mixin;
+package net.anders.betteritemsdropped;
 
 import net.anders.betteritemsdropped.util.ItemEntityRotator;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.ShapeContext;
 import net.minecraft.block.SkullBlock;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.OverlayTexture;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.render.entity.EntityRenderer;
@@ -21,9 +22,11 @@ import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.tag.FluidTags;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.math.random.Random;
 import net.minecraft.util.shape.VoxelShape;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -32,8 +35,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 import static net.minecraft.util.math.RotationAxis.POSITIVE_X;
 import static net.minecraft.util.math.RotationAxis.POSITIVE_Y;
@@ -46,7 +49,7 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
     @Final
     private ItemRenderer itemRenderer;
 
-    private final Set<ItemEntity> renderedItems = new HashSet<>();
+    private final Map<Item, Integer> itemRenderCount = new HashMap<>();
 
     public ItemEntityRendererMixin(EntityRendererFactory.Context dispatcher) {
         super(dispatcher);
@@ -54,15 +57,13 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
 
     @Inject(at = @At("HEAD"), method = "render", cancellable = true)
     private void render(ItemEntity dropped, float f, float partialTicks, MatrixStack matrix, VertexConsumerProvider vertexConsumerProvider, int i, CallbackInfo callback) {
-        if (renderedItems.contains(dropped)) {
-            // If the item has already been rendered, cancel the rendering process
-            callback.cancel();
-            return;
-        }
-
-        renderedItems.add(dropped);
-
         ItemStack itemStack = dropped.getStack();
+
+        // If the player is not sneaking and the item is close enough, simulate the "click to pick up" behavior
+        if (!MinecraftClient.getInstance().options.sneakKey.isPressed() && isItemCloseEnough(dropped)) {
+            HitResult hitResult = new BlockHitResult(new Vec3d(dropped.getX(), dropped.getY(), dropped.getZ()), Direction.UP, dropped.getBlockPos(), false);
+            MinecraftClient.getInstance().interactionManager.interactItem(MinecraftClient.getInstance().player, Hand.MAIN_HAND);
+        }
 
         matrix.push();
         BakedModel bakedModel = this.itemRenderer.getModel(itemStack, dropped.getWorld(), null, 0);
@@ -70,6 +71,11 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
 
         // Helper for manipulating data on the current ItemEntity
         ItemEntityRotator rotator = (ItemEntityRotator) dropped;
+
+        // Ensure removal reason is initialized
+        if (dropped.getRemovalReason() == null) {
+            dropped.getRemovalReason();
+        }
 
         // Certain BlockItems (Grass Block, Jukebox, Dirt, Ladders) are fine being rotated 180 degrees like standard items.
         // Other BlockItems (Carpet, Slab) do not like being rotated and should stay flat.
@@ -100,7 +106,7 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
             matrix.translate(0, -0.185, 0);
         }
 
-        // Item is flying through air
+        // Item is flying through the air
         boolean isAboveWater = dropped.getWorld().getBlockState(dropped.getBlockPos()).getFluidState().getFluid().isIn(FluidTags.WATER);
         if (!dropped.isOnGround() && (!dropped.isSubmergedInWater() && !isAboveWater)) {
             float rotation = ((float) dropped.getItemAge() + partialTicks) / 20.0F + dropped.getHeight(); // calculate rotation based on age and ticks
@@ -112,20 +118,20 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
                 matrix.multiply(POSITIVE_Z.rotationDegrees(rotation));
                 matrix.translate(0, -0.185, 0);
 
-                // Save rotation in entity
+                // Save rotation in the entity
                 rotator.setRotation(new Vec3d(0, 0, rotation));
             } else {
                 // Rotate renderer
                 matrix.multiply(POSITIVE_Y.rotationDegrees(rotation));
 
-                // Save rotation in entity
+                // Save rotation in the entity
                 rotator.setRotation(new Vec3d(0, rotation, 0));
 
                 // Translate down to become flush with floor
                 matrix.translate(0, -0.065, 0);
             }
 
-            // Carrots/Potatoes/Redstone/other crops in air need vertical offset
+            // Carrots/Potatoes/Redstone/other crops in the air need vertical offset
             if (dropped.getStack().getItem() instanceof AliasedBlockItem) {
                 matrix.translate(0, 0, 0.195);
             } else if (!(dropped.getStack().getItem() instanceof BlockItem)) {
@@ -160,14 +166,10 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
         float scaleY = bakedModel.getTransformation().ground.scale.y();
         float scaleZ = bakedModel.getTransformation().ground.scale.z();
 
-        float x;
-        float y;
-        if (!hasDepthInGui) {
-            float r = -0.0F * (float) (getRenderCount(itemStack)) * 0.5F * scaleX;
-            x = -0.0F * (float) (getRenderCount(itemStack)) * 0.5F * scaleY;
-            y = -0.09375F * (float) (getRenderCount(itemStack)) * 0.5F * scaleZ;
-            matrix.translate(r, x, y);
-        }
+        float r = -0.0F * scaleX;
+        float x = -0.0F * scaleY;
+        float y = -0.09375F * scaleZ;
+        matrix.translate(r, x, y);
 
         // Render the item
         this.itemRenderer.renderItem(itemStack, ModelTransformationMode.GROUND, false, matrix, vertexConsumerProvider, i, OverlayTexture.DEFAULT_UV, bakedModel);
@@ -175,11 +177,8 @@ public abstract class ItemEntityRendererMixin extends EntityRenderer<ItemEntity>
         matrix.pop();
     }
 
-    private int getRenderCount(ItemStack itemStack) {
-        Item item = itemStack.getItem();
-        return renderedItems.stream()
-                .filter(entity -> entity.getStack().getItem().equals(item))
-                .mapToInt(entity -> 1)
-                .sum();
+    private boolean isItemCloseEnough(ItemEntity entity) {
+        double distanceSq = MinecraftClient.getInstance().player.squaredDistanceTo(entity);
+        return distanceSq < 1.0; // Adjust this threshold as needed
     }
 }
